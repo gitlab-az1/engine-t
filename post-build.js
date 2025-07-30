@@ -1,89 +1,107 @@
 /* eslint-disable */
-/* eslint-enable comma-dangle, semi, eol-last, quotes, switch-colon-spacing, space-before-blocks, no-dupe-keys, ident, linebreak-style */
+/* eslint-enable indent, comma-dangle, semi, eol-last, quotes, switch-colon-spacing, space-before-blocks, no-dupe-keys, ident, linebreak-style */
 
 const path = require("node:path");
 const { runloop } = require("node-runloop");
-const { existsSync, promises } = require("node:fs");
+const { existsSync, promises, readFileSync, readdirSync } = require("node:fs");
 
 
 async function main() {
-  console.log("[LOG] post build script started at " + Date.now());
-
-  const BUILD_DIR = path.join(process.cwd(), process.env.OUTPUT_DIR ?? "dist");
-  console.log(`[LOG] build dir match ${BUILD_DIR}`);
+  const BUILD_DIR = path.join(process.cwd(), process.env.BUILD_DIR || "dist");
 
   if(!existsSync(BUILD_DIR)) {
-    throw new Error("Output path does not exists");
+    throw new Error("No build directory found");
   }
 
-  const buildStat = await promises.stat(BUILD_DIR);
+  await runloop.createTask(() => rimraf(BUILD_DIR, [
+    {
+      rule: "endsWith",
+      value: [".spec.js", ".spec.d.ts"],
+    },
+  ])).wait();
 
-  if(!buildStat.isDirectory()) {
-    throw new Error("Output path is not a directory");
+  const json = JSON.parse(readFileSync(path.join(process.cwd(), "package.json")));
+  const buildJson = JSON.parse(readFileSync(path.join(process.cwd(), "package.build.json")));
+
+  if("dependencies" in json) {
+    buildJson.dependencies = json.dependencies;
+  } else {
+    delete buildJson.dependencies;
   }
 
-  
-  if(process.env.NODE_ENV === "production") {
-    await runloop.createTask(() => {
-      console.log("[LOG] deleting useless content...");
-      
-      return rimraf(BUILD_DIR, {
-        rule: "endsWith",
-        value: [".spec.js", ".spec.d.ts", "test.js", "test.d.ts"],
-      }, false);
-    })
-    .wait();
-  }
-  
-  console.log("[LOG] done.");
-  console.log("[LOG] updating dependencies list...");
+  buildJson.version = json.version;
 
-  const sourcePkg = JSON.parse(await promises.readFile(path.join(process.cwd(), "package.json")));
-  const buildPkg = JSON.parse(await promises.readFile(path.join(process.cwd(), "package.build.json")));
-
-  buildPkg["dependencies"] = sourcePkg["dependencies"];
-
-  await promises.writeFile(
+  await runloop.createTask(() => promises.writeFile(
     path.join(process.cwd(), "package.build.json"),
-    JSON.stringify(buildPkg, null, 2).trim() // eslint-disable-line comma-dangle
-  );
+    JSON.stringify(buildJson, null, 2) // eslint-disable-line comma-dangle
+  )).wait();
 
-  console.log("[LOG] done.");
+  await runloop.createTask(() => promises.copyFile(
+    path.join(process.cwd(), "package.build.json"),
+    path.join(BUILD_DIR, "package.json") // eslint-disable-line comma-dangle
+  )).wait();
+
+
+  if(process.env.NODE_ENV === "production") {
+    await rimraf(BUILD_DIR, [
+      {
+        rule: "exact",
+        value: ["test.js", "test.d.ts"],
+      },
+    ]);
+  }
 }
 
 
-async function rimraf(sourcePath, pattern = null, deleteBase = true) {
-  const stat = await promises.stat(sourcePath);
+/**
+ * 
+ * @param {string} path 
+ * @param {{ rule: 'endsWith' | 'startsWith' | 'exact'; value: string[] }[]} condition 
+ */
+async function rimraf(pathname, condition) {
+  const stat = await promises.stat(pathname);
 
-  if(!stat.isDirectory()) {
-    await promises.unlink(sourcePath);
-    return;
-  }
-
-  const contents = await promises.readdir(sourcePath);
-
-  for(const filename of contents) {
-    const current = path.join(sourcePath, filename);
-
-    if(pattern?.rule === "endsWith" && !arr(pattern.value).some(item => current.endsWith(item)))
-      continue;
-
-    const currStat = await promises.stat(current);
-
-    if(currStat.isDirectory()) {
-      await rimraf(current);
-    } else {
-      await promises.unlink(current);
+  if(stat.isDirectory()) {
+    for(const subpath of readdirSync(pathname)) {
+      const current = path.join(pathname, subpath);
+      const substat = await promises.stat(current);
+      
+      if(substat.isDirectory()) {
+        await rimraf(current, condition);
+        continue;
+      }
+      
+      for(let i = 0; i < condition.length; i++) {
+        switch(condition[i].rule) {
+          case "endsWith": {
+            if(condition[i].value.some(x => current.endsWith(x))) {
+              await promises.unlink(current);
+            }
+          } break;
+          case "exact": {
+            if(condition[i].value.some(x => x === path.basename(current))) {
+              await promises.unlink(current);
+            }
+          } break;
+        }
+      }
+    }
+  } else {
+    for(let i = 0; i < condition.length; i++) {
+      switch(condition[i].rule) {
+        case "endsWith": {
+          if(condition[i].value.some(x => pathname.endsWith(x))) {
+            await promises.unlink(pathname);
+          }
+        } break;
+        case "exact": {
+          if(condition[i].value.some(x => x === path.basename(pathname))) {
+            await promises.unlink(pathname);
+          }
+        } break;
+      }
     }
   }
-
-  if(deleteBase) {
-    await promises.rmdir(sourcePath);
-  }
-}
-
-function arr(arg) {
-  return Array.isArray(arg) ? arg : [arg];
 }
 
 
