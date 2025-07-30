@@ -148,3 +148,5 @@ yarn*
 !.vscode/settings.json
 
 **/*.c_exec
+
+scripts/**/*.s
